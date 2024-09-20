@@ -39,6 +39,14 @@ var (
 	errEventSignatureMismatch = errors.New("event signature mismatch")
 )
 
+type TransactionType uint8
+
+const (
+	TransactionTypeDefault TransactionType = iota
+	TransactionTypeLegacy  TransactionType = iota
+	TransactionTypeDynamic TransactionType = iota
+)
+
 // SignerFn is a signer function callback when a contract requires a method to
 // sign the transaction before submission.
 type SignerFn func(common.Address, *types.Transaction) (*types.Transaction, error)
@@ -59,7 +67,8 @@ type TransactOpts struct {
 	Nonce  *big.Int       // Nonce to use for the transaction execution (nil = use pending state)
 	Signer SignerFn       // Method to use for signing the transaction (mandatory)
 
-	Value      *big.Int         // Funds to transfer along the transaction (nil = 0 = no funds)
+	Value      *big.Int // Funds to transfer along the transaction (nil = 0 = no funds)
+	Type       TransactionType
 	GasPrice   *big.Int         // Gas price to use for the transaction execution (nil = gas price oracle)
 	GasFeeCap  *big.Int         // Gas fee cap to use for the 1559 transaction execution (nil = gas price oracle)
 	GasTipCap  *big.Int         // Gas priority fee cap to use for the 1559 transaction execution (nil = gas price oracle)
@@ -396,11 +405,11 @@ func (c *BoundContract) transact(opts *TransactOpts, contract *common.Address, i
 		rawTx *types.Transaction
 		err   error
 	)
-	if opts.GasPrice != nil {
+	if opts.Type == TransactionTypeLegacy {
 		rawTx, err = c.createLegacyTx(opts, contract, input)
-	} else if opts.GasFeeCap != nil && opts.GasTipCap != nil {
+	} else if opts.Type == TransactionTypeDynamic {
 		rawTx, err = c.createDynamicTx(opts, contract, input, nil)
-	} else {
+	} else if opts.Type == TransactionTypeDefault {
 		// Only query for basefee if gasPrice not specified
 		if head, errHead := c.transactor.HeaderByNumber(ensureContext(opts.Context), nil); errHead != nil {
 			return nil, errHead
@@ -410,6 +419,8 @@ func (c *BoundContract) transact(opts *TransactOpts, contract *common.Address, i
 			// Chain is not London ready -> use legacy transaction
 			rawTx, err = c.createLegacyTx(opts, contract, input)
 		}
+	} else {
+		return nil, errors.New("invalid transaction type")
 	}
 	if err != nil {
 		return nil, err
