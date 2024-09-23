@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"os"
 	"strings"
 	"sync"
 
@@ -324,6 +325,7 @@ func (c *BoundContract) createDynamicTx(opts *TransactOpts, contract *common.Add
 
 func (c *BoundContract) createLegacyTx(opts *TransactOpts, contract *common.Address, input []byte) (*types.Transaction, error) {
 	if opts.GasFeeCap != nil || opts.GasTipCap != nil || opts.AccessList != nil {
+		fmt.Fprintf(os.Stderr, "TX Opts: %#v\n", opts)
 		return nil, errors.New("maxFeePerGas or maxPriorityFeePerGas or accessList specified but london is not active yet")
 	}
 	// Normalize value
