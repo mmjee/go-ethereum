@@ -24,8 +24,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/ethereum/go-ethereum"
+	"golang.org/x/sync/errgroup"
 
+	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -292,40 +293,59 @@ func (c *BoundContract) createDynamicTx(opts *TransactOpts, contract *common.Add
 	if value == nil {
 		value = new(big.Int)
 	}
+
+	var errgrp errgroup.Group
+	var nonce uint64
+	gasFeeCap := opts.GasFeeCap
+
 	// Estimate TipCap
 	gasTipCap := opts.GasTipCap
 	if gasTipCap == nil {
-		tip, err := c.transactor.SuggestGasTipCap(ensureContext(opts.Context))
-		if err != nil {
-			return nil, err
-		}
-		gasTipCap = tip
+		errgrp.Go(func() error {
+			tip, err := c.transactor.SuggestGasTipCap(ensureContext(opts.Context))
+			if err != nil {
+				return err
+			}
+			gasTipCap = tip
+
+			// Estimate FeeCap
+			if gasFeeCap == nil {
+				gasFeeCap = new(big.Int).Add(
+					gasTipCap,
+					new(big.Int).Mul(head.BaseFee, big.NewInt(basefeeWiggleMultiplier)),
+				)
+			}
+			if gasFeeCap.Cmp(gasTipCap) < 0 {
+				return fmt.Errorf("maxFeePerGas (%v) < maxPriorityFeePerGas (%v)", gasFeeCap, gasTipCap)
+			}
+
+			return nil
+		})
 	}
-	// Estimate FeeCap
-	gasFeeCap := opts.GasFeeCap
-	if gasFeeCap == nil {
-		gasFeeCap = new(big.Int).Add(
-			gasTipCap,
-			new(big.Int).Mul(head.BaseFee, big.NewInt(basefeeWiggleMultiplier)),
-		)
-	}
-	if gasFeeCap.Cmp(gasTipCap) < 0 {
-		return nil, fmt.Errorf("maxFeePerGas (%v) < maxPriorityFeePerGas (%v)", gasFeeCap, gasTipCap)
-	}
-	// Estimate GasLimit
-	gasLimit := opts.GasLimit
-	if opts.GasLimit == 0 {
+	errgrp.Go(func() error {
 		var err error
-		gasLimit, err = c.estimateGasLimit(opts, contract, input, nil, gasTipCap, gasFeeCap, value)
+		nonce, err = c.getNonce(opts)
 		if err != nil {
-			return nil, err
+			return err
 		}
-	}
-	// create the transaction
-	nonce, err := c.getNonce(opts)
+		return nil
+	})
+
+	err := errgrp.Wait()
 	if err != nil {
 		return nil, err
 	}
+
+	// Estimate GasLimit
+	gasLimit := opts.GasLimit
+	if opts.GasLimit == 0 {
+		var err2 error
+		gasLimit, err2 = c.estimateGasLimit(opts, contract, input, nil, gasTipCap, gasFeeCap, value)
+		if err2 != nil {
+			return nil, err2
+		}
+	}
+
 	baseTx := &types.DynamicFeeTx{
 		To:         contract,
 		Nonce:      nonce,
@@ -348,29 +368,47 @@ func (c *BoundContract) createLegacyTx(opts *TransactOpts, contract *common.Addr
 	if value == nil {
 		value = new(big.Int)
 	}
+
+	var errgrp errgroup.Group
+	var nonce uint64
+
 	// Estimate GasPrice
 	gasPrice := opts.GasPrice
 	if gasPrice == nil {
-		price, err := c.transactor.SuggestGasPrice(ensureContext(opts.Context))
-		if err != nil {
-			return nil, err
-		}
-		gasPrice = price
+		errgrp.Go(func() error {
+			price, err := c.transactor.SuggestGasPrice(ensureContext(opts.Context))
+			if err != nil {
+				return err
+			}
+			gasPrice = price
+			return nil
+		})
 	}
-	// Estimate GasLimit
-	gasLimit := opts.GasLimit
-	if opts.GasLimit == 0 {
+
+	errgrp.Go(func() error {
 		var err error
-		gasLimit, err = c.estimateGasLimit(opts, contract, input, gasPrice, nil, nil, value)
+		nonce, err = c.getNonce(opts)
 		if err != nil {
-			return nil, err
+			return err
 		}
-	}
-	// create the transaction
-	nonce, err := c.getNonce(opts)
+		return nil
+	})
+
+	err := errgrp.Wait()
 	if err != nil {
 		return nil, err
 	}
+
+	// Estimate GasLimit
+	gasLimit := opts.GasLimit
+	if opts.GasLimit == 0 {
+		var err2 error
+		gasLimit, err2 = c.estimateGasLimit(opts, contract, input, gasPrice, nil, nil, value)
+		if err2 != nil {
+			return nil, err2
+		}
+	}
+
 	baseTx := &types.LegacyTx{
 		To:       contract,
 		Nonce:    nonce,
@@ -383,14 +421,6 @@ func (c *BoundContract) createLegacyTx(opts *TransactOpts, contract *common.Addr
 }
 
 func (c *BoundContract) estimateGasLimit(opts *TransactOpts, contract *common.Address, input []byte, gasPrice, gasTipCap, gasFeeCap, value *big.Int) (uint64, error) {
-	if contract != nil {
-		// Gas estimation cannot succeed without code for method invocations.
-		if code, err := c.transactor.PendingCodeAt(ensureContext(opts.Context), c.address); err != nil {
-			return 0, err
-		} else if len(code) == 0 {
-			return 0, ErrNoCode
-		}
-	}
 	msg := ethereum.CallMsg{
 		From:       opts.From,
 		To:         contract,
