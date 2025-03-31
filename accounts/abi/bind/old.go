@@ -176,6 +176,10 @@ var (
 	// ErrNoCodeAfterDeploy is returned by WaitDeployed if contract creation leaves
 	// an empty contract behind.
 	ErrNoCodeAfterDeploy = bind2.ErrNoCodeAfterDeploy
+
+	TransactionTypeDefault = bind2.TransactionTypeDefault
+	TransactionTypeLegacy  = bind2.TransactionTypeLegacy
+	TransactionTypeDynamic = bind2.TransactionTypeDynamic
 )
 
 // ContractCaller defines the methods needed to allow operating with a contract on a read
